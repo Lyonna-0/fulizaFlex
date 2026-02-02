@@ -1,5 +1,8 @@
-import React, { useState } from 'react'
-import { Link } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ordersApi } from '../lib/api'
+import { useAuth } from '../hooks/useAuth'
+import toast from 'react-hot-toast'
 
 export default function CheckoutPage() {
   const [step, setStep] = useState(1)
@@ -8,6 +11,22 @@ export default function CheckoutPage() {
     phone: '',
     confirmPhone: '',
   })
+  const [loading, setLoading] = useState(false)
+  const [orderStart, setOrderStart] = useState(null)
+
+  const { user, loading: authLoading } = useAuth()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    // Pre-fill phone if user is logged in
+    if (user && user.phone) {
+      setFormData(prev => ({
+        ...prev,
+        phone: user.phone,
+        confirmPhone: user.phone
+      }))
+    }
+  }, [user])
 
   const limits = [
     { amount: 5000, fee: 250 },
@@ -24,21 +43,53 @@ export default function CheckoutPage() {
   }
 
   const handleConfirm = () => {
-    if (formData.phone !== formData.confirmPhone) {
-      alert('Phone numbers do not match!')
+    // Check auth
+    if (!user) {
+      toast.error('Please login to continue')
+      navigate('/login?redirect=/checkout')
       return
     }
+
+    if (formData.phone !== formData.confirmPhone) {
+      toast.error('Phone numbers do not match!')
+      return
+    }
+
+    // Validate phone format
+    if (!formData.phone.startsWith('+254')) {
+      toast.error('Use format +254...')
+      return
+    }
+
     setStep(3)
   }
 
-  const handlePayment = () => {
-    // Initiate M-Pesa STK push
-    alert('M-Pesa prompt will appear on your phone: ' + formData.phone)
-    setStep(4)
+  const handlePayment = async () => {
+    setLoading(true)
+    try {
+      // Call Backend API
+      const { data } = await ordersApi.create({
+        amount: formData.amount,
+        phone: formData.phone
+      })
+
+      setOrderStart(data.order)
+      toast.success('Payment initiated successfully!')
+      setStep(4)
+    } catch (err) {
+      console.error(err)
+      toast.error(err.response?.data?.error || 'Payment initiation failed')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const fee = limits.find((l) => l.amount === formData.amount)?.fee || 0
   const total = formData.amount + fee
+
+  if (authLoading) {
+    return <div className="min-h-screen flex items-center justify-center">Loading...</div>
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -55,13 +106,12 @@ export default function CheckoutPage() {
           {['Select', 'Confirm', 'Pay', 'Done'].map((label, idx) => (
             <div
               key={idx}
-              className={`flex-1 text-center py-2 ${
-                idx < step
+              className={`flex-1 text-center py-2 ${idx < step
                   ? 'bg-fuliza-green text-white'
                   : idx === step - 1
-                  ? 'bg-fuliza-green text-white'
-                  : 'bg-gray-200 text-gray-600'
-              } rounded mr-2`}
+                    ? 'bg-fuliza-green text-white'
+                    : 'bg-gray-200 text-gray-600'
+                } rounded mr-2`}
             >
               {idx + 1}. {label}
             </div>
@@ -110,6 +160,12 @@ export default function CheckoutPage() {
               </div>
             </div>
 
+            {!user && (
+              <div className="mb-6 bg-yellow-50 p-4 rounded border border-yellow-200 text-yellow-800">
+                You need to login to continue.
+              </div>
+            )}
+
             <div className="mb-6">
               <label className="block text-gray-700 font-semibold mb-2">
                 Phone Number
@@ -122,23 +178,27 @@ export default function CheckoutPage() {
                   setFormData({ ...formData, phone: e.target.value })
                 }
                 className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-fuliza-green"
+                readOnly={!!user} // Read-only if logged in prevents editing profile phone here
               />
+              {user && <p className="text-xs text-gray-500 mt-1">Phone from your account</p>}
             </div>
 
-            <div className="mb-6">
-              <label className="block text-gray-700 font-semibold mb-2">
-                Confirm Phone Number
-              </label>
-              <input
-                type="tel"
-                placeholder="+254712345678"
-                value={formData.confirmPhone}
-                onChange={(e) =>
-                  setFormData({ ...formData, confirmPhone: e.target.value })
-                }
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-fuliza-green"
-              />
-            </div>
+            {!user && (
+              <div className="mb-6">
+                <label className="block text-gray-700 font-semibold mb-2">
+                  Confirm Phone Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="+254712345678"
+                  value={formData.confirmPhone}
+                  onChange={(e) =>
+                    setFormData({ ...formData, confirmPhone: e.target.value })
+                  }
+                  className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-fuliza-green"
+                />
+              </div>
+            )}
 
             <div className="flex gap-4">
               <button
@@ -151,7 +211,7 @@ export default function CheckoutPage() {
                 onClick={handleConfirm}
                 className="btn-primary flex-1"
               >
-                Continue
+                {user ? 'Continue' : 'Login to Continue'}
               </button>
             </div>
           </div>
@@ -182,14 +242,16 @@ export default function CheckoutPage() {
               <button
                 onClick={() => setStep(2)}
                 className="btn-secondary flex-1"
+                disabled={loading}
               >
                 Back
               </button>
               <button
                 onClick={handlePayment}
                 className="btn-primary flex-1 text-lg"
+                disabled={loading}
               >
-                Pay KES {total.toLocaleString()}
+                {loading ? 'Processing...' : `Pay KES ${total.toLocaleString()}`}
               </button>
             </div>
           </div>
@@ -203,10 +265,12 @@ export default function CheckoutPage() {
             <p className="text-gray-600 mb-6">
               Your M-Pesa prompt will appear shortly. Enter your PIN to complete the payment.
             </p>
-            <div className="bg-gray-50 rounded p-4 mb-6">
-              <p className="text-gray-600 text-sm mb-2">Order Reference:</p>
-              <p className="text-xl font-mono font-bold">FZ-20260202-001</p>
-            </div>
+            {orderStart && (
+              <div className="bg-gray-50 rounded p-4 mb-6">
+                <p className="text-gray-600 text-sm mb-2">Order Reference:</p>
+                <p className="text-xl font-mono font-bold text-gray-800">{orderStart.id.split('-')[0]}</p>
+              </div>
+            )}
             <div className="flex flex-col gap-3">
               <Link to="/orders" className="btn-primary">
                 Track Order

@@ -1,10 +1,8 @@
 import express from 'express'
-import { createClient } from '@supabase/supabase-js'
 import { generateToken, verifyToken } from '../auth.js'
-import config from '../config.js'
+import { db } from '../db.js'
 
 const router = express.Router()
-const supabase = createClient(config.supabase.url, config.supabase.key)
 
 // Send OTP to phone
 router.post('/send-otp', async (req, res) => {
@@ -16,7 +14,7 @@ router.post('/send-otp', async (req, res) => {
       return res.status(400).json({ error: 'Invalid phone format. Use +254xxx' })
     }
 
-    // In production, use Supabase Auth with phone provider or SMS service
+    // In production, integrate with SMS service (Africa's Talking, Twilio, etc.)
     // For now, just acknowledge
     res.json({
       message: 'OTP sent successfully',
@@ -38,45 +36,29 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Phone and OTP required' })
     }
 
-    // TODO: Verify with Supabase Auth or SMS service
+    // TODO: Verify with SMS service
     // For now, accept any 6-digit OTP
     if (!/^\d{6}$/.test(otp)) {
       return res.status(400).json({ error: 'Invalid OTP format' })
     }
 
     // Check or create user
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('phone', phone)
-      .single()
+    let user = await db.getUserByPhone(phone)
 
-    let userId
-    if (!user && userError?.code === 'PGRST116') {
+    if (!user) {
       // User doesn't exist, create
-      const { data: newUser, error: createError } = await supabase
-        .from('users')
-        .insert([{ phone, account_status: 'active' }])
-        .select('id')
-        .single()
-
-      if (createError) throw createError
-      userId = newUser.id
-    } else if (user) {
-      userId = user.id
-    } else if (userError) {
-      throw userError
+      user = await db.createUser(phone)
     }
 
     // Generate JWT token
-    const token = generateToken(userId, phone)
+    const token = generateToken(user.id, phone)
 
     res.json({
       message: 'Login successful',
       token,
       user: {
-        id: userId,
-        phone,
+        id: user.id,
+        phone: user.phone,
       },
     })
   } catch (err) {
@@ -88,15 +70,20 @@ router.post('/verify-otp', async (req, res) => {
 // Get current user
 router.get('/me', verifyToken, async (req, res) => {
   try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, phone, name, location, account_status, created_at')
-      .eq('id', req.user.userId)
-      .single()
+    const user = await db.getUserById(req.user.userId)
 
-    if (error) throw error
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
 
-    res.json(user)
+    res.json({
+      id: user.id,
+      phone: user.phone,
+      name: user.name,
+      location: user.location,
+      account_status: user.account_status,
+      created_at: user.created_at,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -107,14 +94,9 @@ router.patch('/profile', verifyToken, async (req, res) => {
   try {
     const { name, location } = req.body
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .update({ name, location, updated_at: new Date() })
-      .eq('id', req.user.userId)
-      .select()
-      .single()
+    await db.updateUser(req.user.userId, { name, location })
 
-    if (error) throw error
+    const user = await db.getUserById(req.user.userId)
 
     res.json(user)
   } catch (err) {

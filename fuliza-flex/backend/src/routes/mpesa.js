@@ -1,16 +1,8 @@
 import express from 'express'
-import { createClient } from '@supabase/supabase-js'
-import {
-  initiateStkPush,
-  queryStkPushStatus,
-  validatePhoneFormat,
-} from '../mpesa.js'
-import { updateOrderStatus } from '../db.js'
-import { updatePaymentStatus, getPaymentByOrderId } from '../db.js'
-import config from '../config.js'
+import { initiateStkPush, queryStkPushStatus, validatePhoneFormat } from '../mpesa.js'
+import { db } from '../db.js'
 
 const router = express.Router()
-const supabase = createClient(config.supabase.url, config.supabase.key)
 
 // Initiate STK Push payment
 router.post('/stk-push', async (req, res) => {
@@ -31,21 +23,7 @@ router.post('/stk-push', async (req, res) => {
     const stk = await initiateStkPush(phone, amount, order_id)
 
     // Store payment record
-    const { data: payment, error: paymentError } = await supabase
-      .from('payments')
-      .insert([
-        {
-          order_id,
-          phone,
-          amount,
-          status: 'pending',
-          mpesa_request_id: stk.requestId,
-        },
-      ])
-      .select()
-      .single()
-
-    if (paymentError) throw paymentError
+    const payment = await db.createPayment(order_id, phone, amount, stk.requestId)
 
     res.json({
       payment_id: payment.id,
@@ -90,13 +68,9 @@ router.post('/callback', async (req, res) => {
     } = Body.stkCallback
 
     // Find payment by M-Pesa request ID
-    const { data: payment, error: paymentError } = await supabase
-      .from('payments')
-      .select('id, order_id')
-      .eq('mpesa_request_id', CheckoutRequestID)
-      .single()
+    const payment = await db.getPaymentByMpesaRequestId(CheckoutRequestID)
 
-    if (paymentError || !payment) {
+    if (!payment) {
       console.error('Payment not found for request:', CheckoutRequestID)
       return res.json({ ResultCode: 0, ResultDesc: 'Accepted' })
     }
@@ -114,16 +88,16 @@ router.post('/callback', async (req, res) => {
       }
 
       // Update payment status
-      await updatePaymentStatus(payment.id, 'completed', mpesaReceipt)
+      await db.updatePaymentStatus(payment.id, 'completed', mpesaReceipt)
 
       // Update order status
-      await updateOrderStatus(payment.order_id, 'processing')
+      await db.updateOrderStatus(payment.order_id, 'processing')
 
       console.log(`Payment completed: ${mpesaReceipt}`)
     } else {
       // Payment failed
-      await updatePaymentStatus(payment.id, 'failed')
-      await updateOrderStatus(payment.order_id, 'failed')
+      await db.updatePaymentStatus(payment.id, 'failed')
+      await db.updateOrderStatus(payment.order_id, 'failed')
 
       console.log(`Payment failed: ${ResultDesc}`)
     }
@@ -140,9 +114,9 @@ router.post('/confirm', async (req, res) => {
   try {
     const { order_id } = req.body
 
-    const { data: payment, error } = await getPaymentByOrderId(order_id)
+    const payment = await db.getPaymentByOrderId(order_id)
 
-    if (error || !payment) {
+    if (!payment) {
       return res.status(404).json({ error: 'Payment not found' })
     }
 

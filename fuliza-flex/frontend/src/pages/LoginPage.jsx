@@ -1,24 +1,61 @@
 import React, { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { authApi } from '../lib/api'
+import { useAuthStore } from '../lib/store'
+import toast from 'react-hot-toast'
 
 export default function LoginPage() {
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
   const [step, setStep] = useState('phone')
+  const [loading, setLoading] = useState(false)
 
-  const handleSendOtp = (e) => {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { setUser, setSession } = useAuthStore()
+
+  // Get redirect path from query string
+  const from = location.search.split('=')[1] || '/'
+
+  const handleSendOtp = async (e) => {
     e.preventDefault()
     if (!phone.startsWith('+254')) {
-      alert('Please enter a valid Kenyan phone number (+254...)')
+      toast.error('Please enter a valid Kenyan phone number (+254...)')
       return
     }
-    setStep('otp')
+
+    setLoading(true)
+    try {
+      await authApi.sendOtp(phone)
+      toast.success('OTP sent successfully!')
+      setStep('otp')
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to send OTP')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleVerifyOtp = (e) => {
+  const handleVerifyOtp = async (e) => {
     e.preventDefault()
-    // Verify OTP logic
-    alert('Login successful!')
+    setLoading(true)
+    try {
+      const { data } = await authApi.verifyOtp(phone, otp)
+
+      // Store token
+      localStorage.setItem('auth_token', data.token)
+
+      // Update store
+      setUser(data.user)
+      setSession({ access_token: data.token, user: data.user })
+
+      toast.success('Login successful!')
+      navigate(from)
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Invalid OTP')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -43,8 +80,12 @@ export default function LoginPage() {
                 required
               />
             </div>
-            <button type="submit" className="btn-primary w-full">
-              Send OTP
+            <button
+              type="submit"
+              className="btn-primary w-full"
+              disabled={loading}
+            >
+              {loading ? 'Sending...' : 'Send OTP'}
             </button>
           </form>
         ) : (
@@ -67,8 +108,12 @@ export default function LoginPage() {
                 required
               />
             </div>
-            <button type="submit" className="btn-primary w-full mb-4">
-              Verify OTP
+            <button
+              type="submit"
+              className="btn-primary w-full mb-4"
+              disabled={loading}
+            >
+              {loading ? 'Verifying...' : 'Verify OTP'}
             </button>
             <button
               type="button"

@@ -64,4 +64,12 @@ export const adminApi = {
     apiClient.get('/admin/analytics', { params: { period } }),
 }
 
+// Auth API functions
+export const authApi = {
+  sendOtp: (phone) => apiClient.post('/auth/send-otp', { phone }),
+  verifyOtp: (phone, otp) => apiClient.post('/auth/verify-otp', { phone, otp }),
+  getMe: () => apiClient.get('/auth/me'),
+  updateProfile: (data) => apiClient.patch('/auth/profile', data),
+}
+
 export default apiClient

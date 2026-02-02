@@ -1,30 +1,16 @@
 import express from 'express'
-import { createClient } from '@supabase/supabase-js'
 import { verifyToken } from '../auth.js'
-import {
-  getAllOrders,
-  getOrderById,
-  createOrder,
-  updateOrderStatus,
-  getUserOrders,
-} from '../db.js'
-import {
-  initiateStkPush,
-  validatePhoneFormat,
-} from '../mpesa.js'
-import config from '../config.js'
+import { db } from '../db.js'
+import { initiateStkPush, validatePhoneFormat } from '../mpesa.js'
 
 const router = express.Router()
-const supabase = createClient(config.supabase.url, config.supabase.key)
 
 // Get all orders (admin)
 router.get('/', async (req, res) => {
   try {
     const { status } = req.query
-    const { data, error } = await getAllOrders({ status })
-
-    if (error) throw error
-    res.json(data)
+    const orders = await db.getAllOrders({ status })
+    res.json(orders)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -33,10 +19,8 @@ router.get('/', async (req, res) => {
 // Get user's orders
 router.get('/my-orders', verifyToken, async (req, res) => {
   try {
-    const { data, error } = await getUserOrders(req.user.userId)
-
-    if (error) throw error
-    res.json(data)
+    const orders = await db.getOrdersByUserId(req.user.userId)
+    res.json(orders)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -45,12 +29,13 @@ router.get('/my-orders', verifyToken, async (req, res) => {
 // Get order by ID
 router.get('/:id', async (req, res) => {
   try {
-    const { data, error } = await getOrderById(req.params.id)
+    const order = await db.getOrderById(req.params.id)
 
-    if (error) throw error
-    if (!data) return res.status(404).json({ error: 'Order not found' })
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' })
+    }
 
-    res.json(data)
+    res.json(order)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -71,41 +56,14 @@ router.post('/', verifyToken, async (req, res) => {
 
     // Create order in database
     const fee = Math.round(amount * 0.05)
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert([
-        {
-          user_id: req.user.userId,
-          amount,
-          fee,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single()
-
-    if (orderError) throw orderError
+    const order = await db.createOrder(req.user.userId, amount, fee)
 
     // Initiate M-Pesa STK Push
     try {
-      const stk = await initiateStkPush(
-        phone,
-        amount + fee,
-        order.id
-      )
+      const stk = await initiateStkPush(phone, amount + fee, order.id)
 
-      // Store M-Pesa request ID
-      await supabase
-        .from('payments')
-        .insert([
-          {
-            order_id: order.id,
-            phone,
-            amount: amount + fee,
-            status: 'pending',
-            mpesa_request_id: stk.requestId,
-          },
-        ])
+      // Store payment record with M-Pesa request ID
+      await db.createPayment(order.id, phone, amount + fee, stk.requestId)
 
       res.status(201).json({
         order,
@@ -113,7 +71,7 @@ router.post('/', verifyToken, async (req, res) => {
       })
     } catch (stkError) {
       // If STK fails, mark order as failed
-      await updateOrderStatus(order.id, 'failed')
+      await db.updateOrderStatus(order.id, 'failed')
       throw stkError
     }
   } catch (err) {
@@ -131,10 +89,10 @@ router.patch('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Status required' })
     }
 
-    const { data, error } = await updateOrderStatus(req.params.id, status)
+    await db.updateOrderStatus(req.params.id, status)
+    const order = await db.getOrderById(req.params.id)
 
-    if (error) throw error
-    res.json(data[0])
+    res.json(order)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
